@@ -1,4 +1,6 @@
 import os
+import sys
+import subprocess
 import argparse
 import yaml
 import json
@@ -24,10 +26,14 @@ def load_data(config: dict, logger: logging.Logger):
         test_path = 'data/processed/fi2010_test.npy'
 
         if not os.path.exists(train_path) or not os.path.exists(test_path):
-            raise FileNotFoundError(
-                f"FI-2010 processed files not found at {train_path} / {test_path}. "
-                "Run `python3 scripts/prepare_fi2010.py` first."
-            )
+            logger.info("FI-2010 processed files not found. Running prepare_fi2010.py...")
+            res = subprocess.run([sys.executable, 'scripts/prepare_fi2010.py'])
+            if res.returncode != 0:
+                raise RuntimeError("Failed to process FI-2010 data. Please check scripts/prepare_fi2010.py output.")
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                raise FileNotFoundError(
+                    f"FI-2010 processed files still not found at {train_path} / {test_path}."
+                )
 
         train_data = np.load(train_path)
         test_data = np.load(test_path)
@@ -65,10 +71,14 @@ def load_data(config: dict, logger: logging.Logger):
 
         crypto_path = 'data/processed/crypto_data.parquet'
         if not os.path.exists(crypto_path):
-            raise FileNotFoundError(
-                f"Crypto processed file not found at {crypto_path}. "
-                "Run `python3 scripts/prepare_crypto.py` first."
-            )
+            logger.info("Crypto processed file not found. Running prepare_crypto.py...")
+            res = subprocess.run([sys.executable, 'scripts/prepare_crypto.py'])
+            if res.returncode != 0:
+                raise RuntimeError("Failed to process Crypto data. Please check scripts/prepare_crypto.py output.")
+            if not os.path.exists(crypto_path):
+                raise FileNotFoundError(
+                    f"Crypto processed file still not found at {crypto_path}."
+                )
 
         df = pd.read_parquet(crypto_path)
 
@@ -107,6 +117,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run one (model, market, seed) experiment.")
     parser.add_argument('--config', type=str, required=True, help="Path to config YAML")
     parser.add_argument('--seed', type=int, default=42, help="Random seed")
+    parser.add_argument('--smoke-test', action='store_true', help="Run a quick smoke test with reduced data and 1 epoch")
     args = parser.parse_args()
 
     # 1. SET SEED FIRST — before any data loading or model construction (build.md §6, §8 rule 6)
@@ -128,6 +139,27 @@ def main():
 
     # 2. Data Loading & Splitting
     X_train, y_train, X_val, y_val, X_test, y_test = load_data(config, logger)
+
+    if args.smoke_test:
+        logger.info("SMOKE TEST: Truncating dataset and reducing training iterations.")
+        X_train, y_train = X_train[:100], y_train[:100]
+        X_val, y_val = X_val[:50], y_val[:50]
+        X_test, y_test = X_test[:50], y_test[:50]
+        
+        # Ensure all 3 classes are present so classifiers infer num_classes=3 correctly
+        if len(y_train) >= 3:
+            y_train[0] = 0
+            y_train[1] = 1
+            y_train[2] = 2
+        
+        if 'training' not in config:
+            config['training'] = {}
+        config['training']['epochs'] = 1
+        
+        if 'model_params' not in config:
+            config['model_params'] = {}
+        config['model_params']['n_estimators'] = 2
+        config['model_params']['max_depth'] = 3
 
     # 3. Scaling — fit ONLY on training data (build.md §8 rule 7)
     if config.get('data', {}).get('standardize', True):
