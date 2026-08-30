@@ -35,13 +35,28 @@ def main():
     out_file = os.path.join(out_dir, 'crypto_data.parquet')
 
     if not os.path.exists(input_file):
-        logger.error(
-            f"Cannot find {input_file} in the project root.\n"
-            "Download from Kaggle:\n"
-            "  https://www.kaggle.com/datasets/martinsn/high-frequency-lob-btcusdt-binance\n"
-            "and place bitcoin_lob_data.csv in the project root."
-        )
-        return
+        logger.warning(f"Cannot find {input_file} locally. Attempting to download from Hugging Face...")
+        try:
+            from huggingface_hub import hf_hub_download
+            hf_hub_download(
+                repo_id="DhruvShah05/Crypto_Stocks_Data",
+                filename=input_file,
+                repo_type="dataset",
+                local_dir="."
+            )
+            logger.info("Download completed.")
+        except ImportError:
+            logger.error("huggingface_hub is not installed. Please install it to enable automatic downloading: pip install huggingface_hub")
+            return
+        except Exception as e:
+            logger.error(f"Failed to download from Hugging Face: {e}")
+            logger.error(
+                f"Cannot find {input_file} in the project root.\n"
+                "Download from Kaggle:\n"
+                "  https://www.kaggle.com/datasets/martinsn/high-frequency-lob-btcusdt-binance\n"
+                "and place bitcoin_lob_data.csv in the project root."
+            )
+            return
 
     logger.info(f"Reading {input_file}... (this may take a minute for large files)")
     df = pd.read_csv(input_file)

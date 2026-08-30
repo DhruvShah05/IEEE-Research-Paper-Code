@@ -79,15 +79,30 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     if not os.path.exists(train_dir) or not os.path.exists(test_dir):
-        logger.error(f"Cannot find FI-2010 dataset at {base_dir}.")
-        logger.error(
-            "Download the Z-score variant from:\n"
-            "  https://etsin.fairdata.fi/dataset/73eb48d7-4dbc-4a10-a52a-da745b47a649\n"
-            "or the GitHub mirror:\n"
-            "  https://github.com/zcakhaa/DeepLOB-Deep-Convolutional-Neural-Networks-for-Limit-Order-Books\n"
-            "Place the extracted BenchmarkDatasets/ folder in the project root."
-        )
-        return
+        logger.warning(f"Cannot find FI-2010 dataset at {base_dir}. Attempting to download from Hugging Face...")
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                repo_id="DhruvShah05/Crypto_Stocks_Data",
+                repo_type="dataset",
+                allow_patterns="BenchmarkDatasets/*",
+                local_dir="."
+            )
+            logger.info("Download completed.")
+        except ImportError:
+            logger.error("huggingface_hub is not installed. Please install it to enable automatic downloading: pip install huggingface_hub")
+            return
+        except Exception as e:
+            logger.error(f"Failed to download from Hugging Face: {e}")
+            logger.error(f"Cannot find FI-2010 dataset at {base_dir}.")
+            logger.error(
+                "Download the Z-score variant from:\n"
+                "  https://etsin.fairdata.fi/dataset/73eb48d7-4dbc-4a10-a52a-da745b47a649\n"
+                "or the GitHub mirror:\n"
+                "  https://github.com/zcakhaa/DeepLOB-Deep-Convolutional-Neural-Networks-for-Limit-Order-Books\n"
+                "Place the extracted BenchmarkDatasets/ folder in the project root."
+            )
+            return
 
     logger.info("--- Preparing FI-2010 Training Data (7 days) ---")
     train_data = load_fi2010_folder(train_dir)
