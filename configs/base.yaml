@@ -1,0 +1,12 @@
+market: null
+model: null
+
+data:
+  standardize: true
+
+imbalance:
+  strategy: class_weight
+  focal_gamma: 2.0
+
+training:
+  seeds: [0, 1, 2, 3, 4]

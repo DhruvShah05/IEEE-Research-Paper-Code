@@ -1,0 +1,31 @@
+# Virtual environments
+venv/
+.venv/
+.venv_test/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Raw and processed data
+data/processed/
+BenchmarkDatasets/
+*.csv
+*.parquet
+*.npy
+
+# Experiment results
+results/
+metrics.json
+run_manifest.json
+config_used.json
+training_history.json
+tuned_config.json
+test_predictions.npy
+test_labels.npy
+
+# OS files
+.DS_Store
