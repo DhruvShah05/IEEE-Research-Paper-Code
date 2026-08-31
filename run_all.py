@@ -14,6 +14,14 @@ def run_all(smoke_test=False):
     Loops over every config in configs/ and runs main.py for every seed (0 to 4).
     Then aggregates results.
     """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            logger.info(f"==== HARDWARE CHECK: Using GPU ({torch.cuda.get_device_name(0)}) ====")
+        else:
+            logger.warning("==== HARDWARE CHECK: No GPU detected! PyTorch will run on CPU. ====")
+    except ImportError:
+        pass
     config_files = glob.glob(os.path.join('configs', '*.yaml'))
     # Filter out base.yaml if it's there
     config_files = [f for f in config_files if not f.endswith('base.yaml')]
@@ -27,6 +35,19 @@ def run_all(smoke_test=False):
     
     for config in config_files:
         for seed in seeds:
+            # Resume logic: Check if metrics.json exists for this run
+            with open(config, 'r') as f:
+                import yaml
+                cfg = yaml.safe_load(f)
+            base_out_dir = cfg.get('output_dir', 'results/default/')
+            run_dir = os.path.join(base_out_dir, f"seed_{seed}")
+            metrics_file = os.path.join(run_dir, 'metrics.json')
+            
+            if os.path.exists(metrics_file):
+                logger.info(f"[{current_run}/{total_runs}] Skipping {config} seed {seed} (already completed)")
+                current_run += 1
+                continue
+                
             logger.info(f"[{current_run}/{total_runs}] Running {config} with seed {seed}")
             cmd = [sys.executable, 'main.py', '--config', config, '--seed', str(seed)]
             if smoke_test:
