@@ -37,12 +37,10 @@ def main():
     if not os.path.exists(input_file):
         logger.warning(f"Cannot find {input_file} locally. Attempting to download from Hugging Face...")
         try:
-            from huggingface_hub import hf_hub_download
-            hf_hub_download(
-                repo_id="DhruvShah05/Crypto_Stocks_Data",
-                filename=input_file,
-                repo_type="dataset",
-                local_dir="."
+            from huggingface_hub import download_bucket_files
+            download_bucket_files(
+                bucket_id="DhruvShah05/Crypto_Stocks_Data",
+                files=[(input_file, input_file)]
             )
             logger.info("Download completed.")
         except ImportError:
