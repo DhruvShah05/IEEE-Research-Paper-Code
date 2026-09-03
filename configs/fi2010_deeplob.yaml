@@ -2,17 +2,33 @@ market: fi2010
 model: deeplob
 
 data:
-  # Prediction horizon k=10 events ahead — standard for published FI-2010 baselines (build.md §2.1)
   horizon_k: 10
   standardize: true
+  feature_set: raw40   # real DeepLOB uses 40-feature raw LOB (not the 144-col set)
+
+model_params:
+  variant: windowed    # real DeepLOB (Zhang et al. 2019)
+  T: 100               # sequence length
+  lstm_hidden: 64
 
 imbalance:
-  strategy: class_weight  # class_weight | focal_loss | none
+  strategy: class_weight
 
 training:
-  epochs: 15
-  batch_size: 256
+  max_epochs: 50
+  patience: 5
+  # T=100 windows are larger; 2048 is safe at 32 GB; try 4096 if VRAM headroom exists
+  batch_size: 2048
+  num_workers: 8
   learning_rate: 0.001
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  grad_clip: 1.0
   seeds: [0, 1, 2, 3, 4]
+
+gpu:
+  amp: true
+  compile: true
+  compile_mode: reduce-overhead
 
 output_dir: results/fi2010_deeplob/

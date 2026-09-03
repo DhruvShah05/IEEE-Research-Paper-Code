@@ -2,18 +2,33 @@ market: crypto
 model: deeplob
 
 data:
-  crypto_window_days: [1, 3]  # use days 1-3 of the 12-day source window
+  crypto_window_days: [1, 3]
   horizon_events: 40
-  threshold: 0.0001  # ±1 basis point — resolved via threshold sweep (build.md §7.1)
+  threshold: 0.0001
   standardize: true
 
+model_params:
+  variant: windowed   # real DeepLOB (Zhang et al. 2019)
+  T: 100              # sequence length
+  lstm_hidden: 64
+
 imbalance:
-  strategy: class_weight  # class_weight | focal_loss | none
+  strategy: class_weight
 
 training:
-  epochs: 15
-  batch_size: 256
+  max_epochs: 50
+  patience: 5
+  batch_size: 2048    # windowed (T=100) → larger tensors; 2048 safe for 32 GB VRAM
+  num_workers: 8
   learning_rate: 0.001
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  grad_clip: 1.0
   seeds: [0, 1, 2, 3, 4]
+
+gpu:
+  amp: true
+  compile: true
+  compile_mode: reduce-overhead
 
 output_dir: results/crypto_deeplob/

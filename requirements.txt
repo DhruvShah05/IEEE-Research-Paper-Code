@@ -6,20 +6,23 @@
 pandas==2.2.1
 numpy==1.26.4
 pyarrow==15.0.0          # required for parquet I/O (crypto dataset)
-huggingface_hub>=1.29.0  # required for downloading datasets from Hugging Face buckets
+huggingface_hub>=1.29.0  # required for downloading datasets from Hugging Face
 
 # Tree models
 scikit-learn==1.4.1.post1
 xgboost==2.0.3
 
 # Neural models
-# NOTE: The version below installs CPU-only PyTorch.
-# For GPU support, install BEFORE running pip install -r requirements.txt:
-#   Lightning AI / Colab / CUDA machine:
-#     pip install torch==2.2.1 --index-url https://download.pytorch.org/whl/cu121
-#   Apple Silicon (MPS):
-#     pip install torch==2.2.1          (default wheel includes MPS support)
-torch==2.2.1
+# ──────────────────────────────────────────────────────────────────────────────
+# RTX 5080 (Blackwell GB203 — CUDA 12.6 required):
+#
+#   pip install torch torchvision torchaudio \
+#       --index-url https://download.pytorch.org/whl/cu126
+#
+# This MUST be run BEFORE `pip install -r requirements.txt`.
+# The line below is a CPU-only fallback for CI / Mac MPS machines.
+# ──────────────────────────────────────────────────────────────────────────────
+torch==2.5.1             # PyTorch 2.5 is the first stable release with RTX 5080 support
 
 # Config
 pyyaml==6.0.1

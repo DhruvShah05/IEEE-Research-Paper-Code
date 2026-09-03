@@ -8,20 +8,32 @@ data:
   standardize: true
 
 model_params:
-  # Ablation flags (build.md §7.3). Independent — each can be changed without affecting the other:
-  #   token_mode:   flat (scalar tokens, like standard Transformer) | grouped (level-pair tokens)
-  #   pooling_mode: mean | cls | attention
-  # The ablation script sweeps all 4 combinations; these are the headline defaults.
-  token_mode: grouped
+  token_mode: level        # best ablation result (LOB-level tokens)
   pooling_mode: attention
+  d_model: 64
+  nhead: 4
+  num_layers: 2
+  dropout: 0.1
 
 imbalance:
-  strategy: class_weight  # class_weight | focal_loss | none
+  strategy: class_weight   # class_weight | focal_loss | none
 
 training:
-  epochs: 15
-  batch_size: 256
+  max_epochs: 50
+  patience: 5
+  # RTX 5080 (32 GB VRAM): batch_size 4096 fills ~1-2 GB for this model size;
+  # use 8192 if GPU util is < 80% (check with `nvidia-smi`).
+  batch_size: 4096
+  num_workers: 8           # match physical CPU cores / 2
   learning_rate: 0.001
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  grad_clip: 1.0
   seeds: [0, 1, 2, 3, 4]
+
+gpu:
+  amp: true               # bfloat16 AMP (RTX 5080 Blackwell supports bf16 natively)
+  compile: true           # torch.compile — ~15-30% speedup for Transformers
+  compile_mode: reduce-overhead  # 'default' | 'reduce-overhead' | 'max-autotune'
 
 output_dir: results/crypto_structured_transformer/

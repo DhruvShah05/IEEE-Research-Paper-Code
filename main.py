@@ -5,7 +5,8 @@ import argparse
 import yaml
 import json
 import logging
-import datetime
+import time
+from datetime import datetime, timezone
 import numpy as np
 import torch
 import sklearn
@@ -14,100 +15,113 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from utils.seeding import set_seed
 from utils.logging import get_logger
-from data.features import TrainOnlyScaler, to_relative_price
+from data.features import TrainOnlyScaler
 from eval.metrics import compute_all_metrics
+from data.labeling import get_class_distribution
+
 
 def load_data(config: dict, logger: logging.Logger):
+    """
+    Loads, labels, and splits data for the configured market.
+
+    Fix 0.1 (crypto): mid-price computed from RAW columns before calling
+                       to_relative_price; passed explicitly to labeling.
+    Fix 0.2 (fi2010): labels remapped from official 1/2/3 → 0/1/2 convention
+                       (0=Down, 1=Stat, 2=Up).
+    Fix 0.6          : timestamp-based window slicing (not row-count arithmetic).
+
+    Returns
+    -------
+    dict with keys:
+        X_train, y_train, X_val, y_val, X_test, y_test,
+        ts_test, mid_test, ret_test   (timestamps, mid-prices, returns for test split)
+    """
     market = config['market']
     data_cfg = config.get('data', {})
 
     if market == 'fi2010':
+        from data.loaders import FI2010Dataset
+
         train_path = 'data/processed/fi2010_train.npy'
-        test_path = 'data/processed/fi2010_test.npy'
+        test_path  = 'data/processed/fi2010_test.npy'
 
         if not os.path.exists(train_path) or not os.path.exists(test_path):
             logger.info("FI-2010 processed files not found. Running prepare_fi2010.py...")
             res = subprocess.run([sys.executable, 'scripts/prepare_fi2010.py'])
             if res.returncode != 0:
-                raise RuntimeError("Failed to process FI-2010 data. Please check scripts/prepare_fi2010.py output.")
+                raise RuntimeError("Failed to process FI-2010 data.")
             if not os.path.exists(train_path) or not os.path.exists(test_path):
                 raise FileNotFoundError(
-                    f"FI-2010 processed files still not found at {train_path} / {test_path}."
+                    f"FI-2010 files still not found at {train_path} / {test_path}."
                 )
 
-        train_data = np.load(train_path)
-        test_data = np.load(test_path)
+        horizon_k   = data_cfg.get('horizon_k', 10)
+        feature_set = data_cfg.get('feature_set', 'full144')
+        logger.info(
+            f"FI-2010: horizon_k={horizon_k}, feature_set={feature_set} "
+            "(labels remapped: 1=Up,2=Stat,3=Down → 0=Down,1=Stat,2=Up)"
+        )
 
-        # FI-2010 has 5 label columns corresponding to horizons k ∈ {10, 20, 30, 50, 100}.
-        # The horizon is explicitly configured via data.horizon_k (build.md §2.1 requirement).
-        # Default k=10 matches the most common published baseline for comparability.
-        horizon_k = data_cfg.get('horizon_k', 10)
-        logger.info(f"FI-2010: Using configured prediction horizon k={horizon_k} events ahead")
+        ds = FI2010Dataset(
+            train_path=train_path,
+            test_path=test_path,
+            horizon_k=horizon_k,
+            feature_set=feature_set,
+        )
+        X_train, y_train, X_val, y_val, X_test, y_test = ds.get_splits()
 
-        # Columns 0–143 are features; columns 144–148 are labels for each horizon.
-        horizon_to_idx = {10: 144, 20: 145, 30: 146, 50: 147, 100: 148}
-        if horizon_k not in horizon_to_idx:
-            raise ValueError(f"horizon_k must be one of {list(horizon_to_idx.keys())}, got {horizon_k}")
-        label_idx = horizon_to_idx[horizon_k]
-
-        X_train, y_train = train_data[:, :144], train_data[:, label_idx]
-        X_test, y_test = test_data[:, :144], test_data[:, label_idx]
-
-        # Val carved from training days only (last 20%), not from test days (build.md §6)
-        split_idx = int(len(X_train) * 0.8)
-        X_train_final, y_train_final = X_train[:split_idx], y_train[:split_idx]
-        X_val, y_val = X_train[split_idx:], y_train[split_idx:]
-
-        # FI-2010 labels are 1 (down), 2 (stationary), 3 (up) → shift to 0-indexed for CrossEntropyLoss
-        y_train_final = y_train_final.astype(int) - 1
-        y_val = y_val.astype(int) - 1
-        y_test = y_test.astype(int) - 1
-
-        return X_train_final, y_train_final, X_val, y_val, X_test, y_test
+        return dict(
+            X_train=X_train, y_train=y_train,
+            X_val=X_val,     y_val=y_val,
+            X_test=X_test,   y_test=y_test,
+            ts_test=None, mid_test=None, ret_test=None,
+        )
 
     elif market == 'crypto':
-        import pandas as pd
-        from data.labeling import apply_horizon_labeling
+        from data.loaders import CryptoDataset
 
         crypto_path = 'data/processed/crypto_data.parquet'
         if not os.path.exists(crypto_path):
             logger.info("Crypto processed file not found. Running prepare_crypto.py...")
             res = subprocess.run([sys.executable, 'scripts/prepare_crypto.py'])
             if res.returncode != 0:
-                raise RuntimeError("Failed to process Crypto data. Please check scripts/prepare_crypto.py output.")
+                raise RuntimeError("Failed to process Crypto data.")
             if not os.path.exists(crypto_path):
                 raise FileNotFoundError(
-                    f"Crypto processed file still not found at {crypto_path}."
+                    f"Crypto file still not found at {crypto_path}."
                 )
 
-        df = pd.read_parquet(crypto_path)
-
-        # Optionally restrict to a contiguous day-window (build.md §2.2)
-        window = data_cfg.get('crypto_window_days', None)
-        if window:
-            start_day, end_day = window
-            # 250ms interval → 4 rows/sec → 345,600 rows/day
-            start_idx = (start_day - 1) * 345_600
-            end_idx = end_day * 345_600
-            df = df.iloc[start_idx:end_idx].copy()
-            logger.info(f"Crypto: Using rows {start_idx}–{end_idx} ({end_day - start_day + 1} day window)")
-
-        logger.info(f"Crypto: {len(df):,} rows loaded. Applying relative-price transform...")
-        df = to_relative_price(df)
-
-        horizon = data_cfg.get('horizon_events', 40)
+        horizon   = data_cfg.get('horizon_events', 40)
         threshold = data_cfg.get('threshold', 0.0001)
-        logger.info(f"Crypto: Horizon={horizon} events, Threshold=±{threshold} (±{threshold*100:.4f}%)")
+        price_mode = data_cfg.get('price_mode', 'fractional')
+        vol_transform = data_cfg.get('volume_transform', 'log1p')
+        labeling_scheme = data_cfg.get('labeling_scheme', 'point_to_point')
 
-        X, y = apply_horizon_labeling(df, horizon, threshold)
+        # Fix 0.6: pass window as UNIX ms timestamps when available
+        window = data_cfg.get('crypto_window_days', None)
 
-        # Chronological 70/15/15 split — no shuffling (build.md §6)
-        n = len(X)
-        tr = int(n * 0.70)
-        val = int(n * 0.85)
-        logger.info(f"Crypto split: train={tr:,} val={val-tr:,} test={n-val:,}")
+        logger.info(
+            f"Crypto: horizon={horizon}, threshold=±{threshold}, "
+            f"price_mode={price_mode}, labeling={labeling_scheme}"
+        )
 
-        return X[:tr], y[:tr], X[tr:val], y[tr:val], X[val:], y[val:]
+        ds = CryptoDataset(
+            parquet_path=crypto_path,
+            horizon=horizon,
+            threshold=threshold,
+            window_days=window,
+            price_mode=price_mode,
+            volume_transform=vol_transform,
+            labeling_scheme=labeling_scheme,
+        )
+        X_train, y_train, X_val, y_val, X_test, y_test = ds.get_splits()
+
+        return dict(
+            X_train=X_train, y_train=y_train,
+            X_val=X_val,     y_val=y_val,
+            X_test=X_test,   y_test=y_test,
+            ts_test=ds.ts_test, mid_test=ds.mid_test, ret_test=ds.ret_test,
+        )
 
     else:
         raise ValueError(f"Unknown market: {market!r}. Must be 'fi2010' or 'crypto'.")
@@ -117,10 +131,13 @@ def main():
     parser = argparse.ArgumentParser(description="Run one (model, market, seed) experiment.")
     parser.add_argument('--config', type=str, required=True, help="Path to config YAML")
     parser.add_argument('--seed', type=int, default=42, help="Random seed")
-    parser.add_argument('--smoke-test', action='store_true', help="Run a quick smoke test with reduced data and 1 epoch")
+    parser.add_argument(
+        '--smoke-test', action='store_true',
+        help="Run a quick smoke test with reduced data and 1 epoch"
+    )
     args = parser.parse_args()
 
-    # 1. SET SEED FIRST — before any data loading or model construction (build.md §6, §8 rule 6)
+    # 1. SET SEED FIRST — before any data loading or model construction (build.md §6)
     set_seed(args.seed)
 
     logger = get_logger(__name__)
@@ -138,24 +155,32 @@ def main():
     logger.info(f"Output dir: {run_dir}")
 
     # 2. Data Loading & Splitting
-    X_train, y_train, X_val, y_val, X_test, y_test = load_data(config, logger)
+    data = load_data(config, logger)
+    X_train, y_train = data['X_train'], data['y_train']
+    X_val,   y_val   = data['X_val'],   data['y_val']
+    X_test,  y_test  = data['X_test'],  data['y_test']
+    ts_test, mid_test, ret_test = data['ts_test'], data['mid_test'], data['ret_test']
 
+    # Fix 3.3: smoke-test operates on a COPY so original arrays are unchanged
     if args.smoke_test:
         logger.info("SMOKE TEST: Truncating dataset and reducing training iterations.")
-        X_train, y_train = X_train[:100], y_train[:100]
-        X_val, y_val = X_val[:50], y_val[:50]
-        X_test, y_test = X_test[:50], y_test[:50]
-        
+        X_train = X_train[:100].copy()
+        y_train = y_train[:100].copy()
+        X_val   = X_val[:50].copy()
+        y_val   = y_val[:50].copy()
+        X_test  = X_test[:50].copy()
+        y_test  = y_test[:50].copy()
+
         # Ensure all 3 classes are present so classifiers infer num_classes=3 correctly
         if len(y_train) >= 3:
             y_train[0] = 0
             y_train[1] = 1
             y_train[2] = 2
-        
+
         if 'training' not in config:
             config['training'] = {}
         config['training']['epochs'] = 1
-        
+
         if 'model_params' not in config:
             config['model_params'] = {}
         config['model_params']['n_estimators'] = 2
@@ -166,8 +191,10 @@ def main():
         logger.info("Fitting Z-score scaler on training data only...")
         scaler = TrainOnlyScaler(use_zscore=True)
         X_train = scaler.fit_transform(X_train)
-        X_val = scaler.transform(X_val)
-        X_test = scaler.transform(X_test)
+        X_val   = scaler.transform(X_val)
+        X_test  = scaler.transform(X_test)
+        # Save scaler stats for traceability (1.1)
+        scaler.save_stats(run_dir)
 
     model_type = config.get('model')
     is_neural = model_type in ['deeplob', 'transformer', 'structured_transformer']
@@ -177,6 +204,17 @@ def main():
         from train.train_neural import train_neural_model
 
         batch_size = config.get('training', {}).get('batch_size', 256)
+        seed = args.seed
+
+        # Deterministic DataLoader (fix 3.1)
+        def seed_worker(worker_id):
+            import random
+            worker_seed = seed + worker_id
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+
+        g = torch.Generator()
+        g.manual_seed(seed)
 
         train_ds = TensorDataset(
             torch.tensor(X_train, dtype=torch.float32),
@@ -191,53 +229,116 @@ def main():
             torch.tensor(y_test, dtype=torch.long)
         )
 
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-        test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+        # Deterministic DataLoader (fix 3.1)
+        def seed_worker(worker_id):
+            import random
+            worker_seed = seed + worker_id
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+
+        g = torch.Generator()
+        g.manual_seed(seed)
+
+        # pin_memory speeds up Host→GPU transfer on CUDA machines.
+        # num_workers: 4 workers is a good default for a single GPU; avoids
+        # the DataLoader becoming the bottleneck for small models.
+        _pin   = torch.cuda.is_available()
+        _nw    = config.get('training', {}).get('num_workers', 4 if _pin else 0)
+
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True,
+            generator=g, worker_init_fn=seed_worker,
+            pin_memory=_pin, num_workers=_nw, persistent_workers=(_nw > 0)
+        )
+        val_loader  = DataLoader(val_ds,  batch_size=batch_size * 4, shuffle=False,
+                                 pin_memory=_pin, num_workers=_nw, persistent_workers=(_nw > 0))
+        test_loader = DataLoader(test_ds, batch_size=batch_size * 4, shuffle=False,
+                                 pin_memory=_pin, num_workers=_nw, persistent_workers=(_nw > 0))
 
         model = train_neural_model(config, train_loader, val_loader, run_dir)
 
-        # 5. Test inference
+        # 5. Test inference — collect both argmax and probabilities (3.1/3.3)
         model.eval()
-        # Device priority: CUDA (cloud GPU) > MPS (Apple Silicon) > CPU
         if torch.cuda.is_available():
             device = torch.device('cuda')
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             device = torch.device('mps')
         else:
             device = torch.device('cpu')
-        test_preds = []
+
+        model = model.to(device)
+        test_preds, test_probs_list = [], []
+        latency_ms_list = []
+
         with torch.no_grad():
             for batch_x, _ in test_loader:
                 batch_x = batch_x.to(device)
+                t0 = time.perf_counter()
                 logits = model(batch_x)
+                latency_ms_list.append((time.perf_counter() - t0) * 1000 / len(batch_x))
+                probs = torch.softmax(logits, dim=1)
                 preds = torch.argmax(logits, dim=1)
                 test_preds.extend(preds.cpu().numpy())
+                test_probs_list.append(probs.cpu().numpy())
+
         test_preds = np.array(test_preds)
+        test_probs = np.vstack(test_probs_list)  # shape (N_test, 3)
+        avg_latency_ms = float(np.mean(latency_ms_list))
 
     else:
         from train.train_tree import train_tree_model
+
+        # Fix 0.5 warning: if n_estimators is None, tuning will run per seed
+        mp = config.get('model_params', {})
+        if mp.get('n_estimators') is None:
+            logger.warning(
+                "model_params.n_estimators is None — Optuna will tune hyperparameters "
+                "for this seed, meaning variance across seeds includes HP variance "
+                "(fix 0.5 — freeze params after first tune run)."
+            )
+
         model = train_tree_model(config, X_train, y_train, X_val, y_val, run_dir)
         test_preds = model.predict(X_test)
+        test_probs = model.predict_proba(X_test)  # shape (N_test, 3)
+        avg_latency_ms = None
 
     # 6. Metrics
-    metrics = compute_all_metrics(y_test, test_preds)
-    logger.info(f"Final Test Macro-F1: {metrics['macro_f1']:.4f}")
+    metrics = compute_all_metrics(y_test, test_preds, test_probs)
+    logger.info(f"Final Test Macro-F1:  {metrics['macro_f1']:.4f}")
     logger.info(f"Final Test Accuracy:  {metrics['accuracy']:.4f}")
+    logger.info(f"Final Test Bal-Acc:   {metrics['balanced_accuracy']:.4f}")
     logger.info(f"Final Test MCC:       {metrics['mcc']:.4f}")
+
+    # Add class distributions per split (3.3)
+    metrics['train_class_dist'] = get_class_distribution(y_train)
+    metrics['val_class_dist']   = get_class_distribution(y_val)
+    metrics['test_class_dist']  = get_class_distribution(y_test)
 
     with open(os.path.join(run_dir, 'metrics.json'), 'w') as f:
         json.dump(metrics, f, indent=4)
 
-    # 7. Save run manifest (build.md §6): timestamp, seed, library versions, key config fields
+    # 7. Save run manifest — Fix: use timezone-aware datetime (3.3)
+    try:
+        param_count = int(sum(p.numel() for p in model.parameters()))
+    except AttributeError:
+        param_count = None  # tree models
+
     manifest = {
-        'timestamp_utc': datetime.datetime.utcnow().isoformat() + 'Z',
+        'timestamp_utc': datetime.now(timezone.utc).isoformat(),
         'market': config['market'],
         'model': config['model'],
+        # Fix 0.3: avoid "Improved Transformer" — call it "Structured Transformer"
+        'model_display_name': (
+            'Structured Transformer'
+            if config['model'] == 'structured_transformer'
+            else config['model']
+        ),
         'seed': args.seed,
         'config_file': args.config,
         'horizon_events': config.get('data', {}).get('horizon_events'),
         'horizon_k': config.get('data', {}).get('horizon_k'),
+        'param_count': param_count,
+        'avg_inference_latency_ms': avg_latency_ms,
         'library_versions': {
             'torch': torch.__version__,
             'sklearn': sklearn.__version__,
@@ -248,13 +349,20 @@ def main():
     with open(os.path.join(run_dir, 'run_manifest.json'), 'w') as f:
         json.dump(manifest, f, indent=4)
 
-    # 8. Save raw predictions for significance testing (build.md §7.5)
+    # 8. Save predictions and supporting arrays (3.3 — needed for backtest)
     np.save(os.path.join(run_dir, 'test_predictions.npy'), test_preds)
-    np.save(os.path.join(run_dir, 'test_labels.npy'), y_test)
+    np.save(os.path.join(run_dir, 'test_labels.npy'),      y_test)
+    np.save(os.path.join(run_dir, 'test_probs.npy'),       test_probs)
+
+    if ts_test is not None:
+        np.save(os.path.join(run_dir, 'test_timestamps.npy'), ts_test)
+    if mid_test is not None:
+        np.save(os.path.join(run_dir, 'test_mid_prices.npy'), mid_test)
+    if ret_test is not None:
+        np.save(os.path.join(run_dir, 'test_returns.npy'), ret_test)
 
     logger.info(f"Run completed. Results saved to {run_dir}")
 
 
 if __name__ == '__main__':
     main()
-

@@ -4,6 +4,10 @@ venv/
 .venv_test/
 env/
 
+# IDE directories (fix 7 — was missing; .idea/ should not be tracked)
+.idea/
+.vscode/
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -13,19 +17,37 @@ __pycache__/
 # Raw and processed data
 data/processed/
 BenchmarkDatasets/
-*.csv
 *.parquet
-*.npy
 
-# Experiment results
-results/
-metrics.json
-run_manifest.json
-config_used.json
-training_history.json
-tuned_config.json
-test_predictions.npy
-test_labels.npy
+# Experiment results — track the summary CSVs and LaTeX tables, NOT the bulk .npy
+# (Fix 7: blanket `results/` was too broad — it hid the output CSVs from git)
+# Ignore raw per-seed run files
+results/**/metrics.json
+results/**/run_manifest.json
+results/**/config_used.json
+results/**/training_history.json
+results/**/tuned_config.json
+results/**/test_predictions.npy
+results/**/test_labels.npy
+results/**/test_probs.npy
+results/**/test_timestamps.npy
+results/**/test_mid_prices.npy
+results/**/test_returns.npy
+results/**/model.pt
+results/**/scaler_stats.npz
+results/**/feature_importances.json
+
+# DO NOT ignore: summary tables, LaTeX, significance reports, plots
+# results/aggregated_metrics.csv   — keep
+# results/aggregated_metrics.tex   — keep
+# results/significance_report.csv  — keep
+# results/significance_table.tex   — keep
+# results/confusion_matrices.csv   — keep
+# results/figures/                 — keep
+
+# .npy files outside results/ (e.g. stray temp files)
+*.npy
 
 # OS files
 .DS_Store
+Thumbs.db

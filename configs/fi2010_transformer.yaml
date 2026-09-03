@@ -2,17 +2,34 @@ market: fi2010
 model: transformer
 
 data:
-  # Prediction horizon k=10 events ahead — standard for published FI-2010 baselines (build.md §2.1)
   horizon_k: 10
   standardize: true
+  feature_set: full144
+
+model_params:
+  d_model: 64
+  nhead: 4
+  num_layers: 2
+  dropout: 0.1
+  token_mode: scalar
 
 imbalance:
-  strategy: class_weight  # class_weight | focal_loss | none
+  strategy: class_weight
 
 training:
-  epochs: 15
-  batch_size: 256
+  max_epochs: 50
+  patience: 5
+  batch_size: 4096
+  num_workers: 8
   learning_rate: 0.001
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  grad_clip: 1.0
   seeds: [0, 1, 2, 3, 4]
+
+gpu:
+  amp: true
+  compile: true
+  compile_mode: reduce-overhead
 
 output_dir: results/fi2010_transformer/

@@ -2,25 +2,36 @@ market: fi2010
 model: structured_transformer
 
 data:
-  # Prediction horizon k=10 events ahead — standard for published FI-2010 baselines (build.md §2.1)
-  horizon_k: 10
+  horizon_k: 10       # standard FI-2010 k=10 horizon (Ntakaris et al. 2018)
   standardize: true
+  feature_set: full144
 
 model_params:
-  # Ablation flags (build.md §7.3). Independent — each can be changed without affecting the other:
-  #   token_mode:   flat (scalar tokens, like standard Transformer) | grouped (level-pair tokens)
-  #   pooling_mode: mean | cls | attention
-  # The ablation script sweeps all 4 combinations; these are the headline defaults.
-  token_mode: grouped
+  token_mode: level        # best ablation result (LOB-level tokens)
   pooling_mode: attention
+  d_model: 64
+  nhead: 4
+  num_layers: 2
+  dropout: 0.1
 
 imbalance:
-  strategy: class_weight  # class_weight | focal_loss | none
+  strategy: class_weight
 
 training:
-  epochs: 15
-  batch_size: 256
+  max_epochs: 50
+  patience: 5
+  # FI-2010 train = ~200k rows after split; 4096 fills GPU nicely
+  batch_size: 4096
+  num_workers: 8
   learning_rate: 0.001
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  grad_clip: 1.0
   seeds: [0, 1, 2, 3, 4]
+
+gpu:
+  amp: true
+  compile: true
+  compile_mode: reduce-overhead
 
 output_dir: results/fi2010_structured_transformer/
