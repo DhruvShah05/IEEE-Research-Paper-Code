@@ -229,16 +229,6 @@ def main():
             torch.tensor(y_test, dtype=torch.long)
         )
 
-        # Deterministic DataLoader (fix 3.1)
-        def seed_worker(worker_id):
-            import random
-            worker_seed = seed + worker_id
-            np.random.seed(worker_seed)
-            random.seed(worker_seed)
-
-        g = torch.Generator()
-        g.manual_seed(seed)
-
         # pin_memory speeds up Host→GPU transfer on CUDA machines.
         # num_workers: 4 workers is a good default for a single GPU; avoids
         # the DataLoader becoming the bottleneck for small models.

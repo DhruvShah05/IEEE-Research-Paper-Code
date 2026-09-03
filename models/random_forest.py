@@ -25,10 +25,10 @@ def build_model(config: dict) -> RandomForestClassifier:
     class_weight = 'balanced' if imbalance_strat == 'class_weight' else None
 
     return RandomForestClassifier(
-        n_estimators    = mp.get('n_estimators')     or 100,
-        max_depth       = mp.get('max_depth')        or None,
-        min_samples_leaf = mp.get('min_samples_leaf') or 1,
-        max_features    = mp.get('max_features')     or 'sqrt',
+        n_estimators    = mp.get('n_estimators',      100),
+        max_depth       = mp.get('max_depth',         None),
+        min_samples_leaf = mp.get('min_samples_leaf', 1),
+        max_features    = mp.get('max_features',      'sqrt'),
         class_weight    = class_weight,
         random_state    = config.get('seed', 42),
         n_jobs          = -1,

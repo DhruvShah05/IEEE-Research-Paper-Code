@@ -23,13 +23,13 @@ def build_model(config: dict) -> xgb.XGBClassifier:
     mp = config.get('model_params', {})
 
     return xgb.XGBClassifier(
-        n_estimators      = mp.get('n_estimators')      or 100,
-        max_depth         = mp.get('max_depth')         or 6,
-        learning_rate     = mp.get('learning_rate')     or 0.1,
-        subsample         = mp.get('subsample')         or 0.8,
-        colsample_bytree  = mp.get('colsample_bytree')  or 0.8,
-        min_child_weight  = mp.get('min_child_weight')  or 1,
-        reg_lambda        = mp.get('reg_lambda')        or 1.0,
+        n_estimators      = mp.get('n_estimators',      100),
+        max_depth         = mp.get('max_depth',         6),
+        learning_rate     = mp.get('learning_rate',     0.1),
+        subsample         = mp.get('subsample',         0.8),
+        colsample_bytree  = mp.get('colsample_bytree',  0.8),
+        min_child_weight  = mp.get('min_child_weight',  1),
+        reg_lambda        = mp.get('reg_lambda',        1.0),
         objective         = 'multi:softprob',
         num_class         = 3,
         random_state      = config.get('seed', 42),

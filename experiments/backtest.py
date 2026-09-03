@@ -112,7 +112,8 @@ def _simulate_strategy(
 
     mean_pnl = float(np.mean(pnl_bps))
     std_pnl  = float(np.std(pnl_bps, ddof=1)) + 1e-9
-    downside  = float(np.std(pnl_bps[pnl_bps < 0], ddof=1)) + 1e-9
+    neg_pnl  = pnl_bps[pnl_bps < 0]
+    downside  = float(np.std(neg_pnl, ddof=1)) + 1e-9 if len(neg_pnl) >= 2 else 1e-9
     sharpe    = mean_pnl / std_pnl * ann_factor
     sortino   = mean_pnl / downside * ann_factor
 
