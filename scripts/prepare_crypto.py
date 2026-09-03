@@ -151,19 +151,16 @@ def main():
     else:
         out_file = os.path.join(out_dir, f'{exchange}_{symbol.lower()}_data.parquet')
 
-    # Auto-download if missing (fix 1.4: use hf_hub_download / snapshot_download)
+    # Auto-download if missing
     if not os.path.exists(input_file):
         logger.warning(f"Cannot find {input_file}. Attempting Hugging Face download...")
         try:
-            from huggingface_hub import hf_hub_download
-            downloaded = hf_hub_download(
-                repo_id="DhruvShah05/Crypto_Stocks_Data",
-                filename=os.path.basename(input_file),
-                repo_type="dataset",
-                local_dir=os.path.dirname(input_file) or '.',
+            from huggingface_hub import download_bucket_files
+            download_bucket_files(
+                bucket_id="DhruvShah05/Crypto_Stocks_Data",
+                files=[(input_file, input_file)]
             )
-            input_file = downloaded
-            logger.info(f"Downloaded to {input_file}")
+            logger.info("Download completed.")
         except ImportError:
             logger.error("huggingface_hub not installed. pip install huggingface_hub")
             return

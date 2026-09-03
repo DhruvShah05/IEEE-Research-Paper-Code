@@ -109,12 +109,10 @@ def main():
     if not os.path.exists(train_dir) or not os.path.exists(test_dir):
         logger.warning(f"Cannot find FI-2010 dataset at {base_dir}. Attempting to download...")
         try:
-            from huggingface_hub import snapshot_download
-            snapshot_download(
-                repo_id="DhruvShah05/Crypto_Stocks_Data",
-                repo_type="dataset",
-                local_dir="BenchmarkDatasets",
-                allow_patterns=["BenchmarkDatasets/*"],
+            from huggingface_hub import sync_bucket
+            sync_bucket(
+                source="hf://buckets/DhruvShah05/Crypto_Stocks_Data/BenchmarkDatasets",
+                dest="BenchmarkDatasets"
             )
             logger.info("Download completed.")
         except ImportError:
