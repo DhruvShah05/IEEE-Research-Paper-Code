@@ -73,16 +73,18 @@ def _simulate_strategy(
     n_trades = 0
 
     for t in range(n):
-        # Apply latency
-        effective_t = min(t + latency, n - 1)
-        new_signal = signals[effective_t]
+        # A4: Apply latency — act at time t on a signal that was generated
+        # latency observations AGO (not in the future). No trade for t < latency.
+        if latency > 0 and t < latency:
+            new_signal = 0  # no signal yet — stay flat
+        else:
+            new_signal = signals[t - latency]
 
         if new_signal != position:
             # Close existing position
             if position != 0 and entry_price is not None:
                 exit_price = mid_prices[t]
                 raw_ret = (exit_price - entry_price) / entry_price * position
-                cost = (fee_bps + slippage_bps) / 10_000
                 net_ret_bps = raw_ret * 10_000 - (fee_bps + slippage_bps)
                 pnl_bps[t] = net_ret_bps
                 trade_pnls.append(net_ret_bps)
@@ -103,25 +105,38 @@ def _simulate_strategy(
     drawdowns   = running_max - cumulative
     max_dd      = float(drawdowns.max())
 
-    # Sharpe / Sortino (annualised)
+    # A4 Sharpe / Sortino: compute on trade-level PnL, not per-tick series.
+    # Per-tick series is mostly zeros which inflates the denominator and
+    # produces meaningless annualised values.
     if timestamps is not None and len(timestamps) > 1:
         dt_s = float(np.median(np.diff(timestamps)) / 1000)  # ms → s
         ann_factor = np.sqrt(ANNUALIZE / dt_s)
     else:
         ann_factor = np.sqrt(252 * 390)  # trading-day fallback
 
-    mean_pnl = float(np.mean(pnl_bps))
-    std_pnl  = float(np.std(pnl_bps, ddof=1)) + 1e-9
-    neg_pnl  = pnl_bps[pnl_bps < 0]
-    downside  = float(np.std(neg_pnl, ddof=1)) + 1e-9 if len(neg_pnl) >= 2 else 1e-9
-    sharpe    = mean_pnl / std_pnl * ann_factor
-    sortino   = mean_pnl / downside * ann_factor
+    if len(trade_pnls) >= 2:
+        trade_arr = np.array(trade_pnls)
+        mean_pnl = float(np.mean(trade_arr))
+        std_pnl  = float(np.std(trade_arr, ddof=1)) + 1e-9
+        neg_pnl  = trade_arr[trade_arr < 0]
+        downside = float(np.std(neg_pnl, ddof=1)) + 1e-9 if len(neg_pnl) >= 2 else 1e-9
+        # Scale annualisation: trade_pnl is per-trade, not per-tick.
+        # Use n_trades / n (fraction of ticks that are trades) to convert.
+        trade_freq = n_trades / n if n > 0 else 1.0
+        ann_factor_trade = ann_factor * np.sqrt(trade_freq) if trade_freq > 0 else ann_factor
+        sharpe  = mean_pnl / std_pnl * ann_factor_trade
+        sortino = mean_pnl / downside * ann_factor_trade
+    else:
+        mean_pnl = 0.0
+        sharpe   = 0.0
+        sortino  = 0.0
 
     hit_rate  = float(np.mean(np.array(trade_pnls) > 0)) if trade_pnls else 0.0
     turnover  = float(np.mean(np.abs(np.diff(signals, prepend=0))))
 
     return {
-        'gross_return_bps': float(cumulative[-1] + n_trades * (fee_bps + slippage_bps)),
+        # A4: gross return adds back BOTH entry and exit cost per trade (2 × n_trades × cost).
+        'gross_return_bps': float(cumulative[-1] + 2 * n_trades * (fee_bps + slippage_bps)),
         'net_return_bps':   float(cumulative[-1]),
         'sharpe':           float(sharpe),
         'sortino':          float(sortino),

@@ -189,7 +189,8 @@ def train_neural_model(
     # --- AMP scaler (bfloat16 on Blackwell/Ampere, float16 fallback) ---
     use_amp = gpu_cfg.get('amp', True) and torch.cuda.is_available()
     amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    scaler = torch.cuda.amp.GradScaler(enabled=(use_amp and amp_dtype == torch.float16))
+    # B3: torch.cuda.amp.GradScaler is deprecated in PyTorch >= 2.5; use torch.amp.GradScaler.
+    scaler = torch.amp.GradScaler('cuda', enabled=(use_amp and amp_dtype == torch.float16))
     if use_amp:
         logger.info(f"AMP enabled (dtype={amp_dtype})")
 

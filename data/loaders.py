@@ -23,6 +23,68 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# A2: Canonical column layout for DeepLOB and level/grouped tokenisation
+# ---------------------------------------------------------------------------
+# DeepLOB's Conv2d kernels with stride (1,2) assume FI-2010's interleaved layout:
+#   col 0: ask_price_1,  col 1: ask_vol_1,  col 2: bid_price_1,  col 3: bid_vol_1,
+#   col 4: ask_price_2,  col 5: ask_vol_2,  col 6: bid_price_2,  col 7: bid_vol_2, ...
+#   (alternating ask/bid per level, 4 cols per level, 10 levels = 40 cols)
+#
+# Crypto's raw layout (from prepare_crypto.py / the parquet schema):
+#   cols 0-19:  bid prices  (bid_p1..bid_p10)  — block layout
+#   cols 20-29: bid volumes (bid_v1..bid_v10)
+#   ... actually: cols 0..9 = bid_p1..bid_p10, 10..19 = bid_v1..bid_v10,
+#                 20..29 = ask_p1..ask_p10,    30..39 = ask_v1..ask_v10
+#   i.e., [bid_block(p), bid_block(v), ask_block(p), ask_block(v)]
+#
+# FI-2010 is already in the canonical interleaved layout so no reorder needed.
+
+def reorder_to_canonical(X: np.ndarray, market: str) -> np.ndarray:
+    """
+    Reorders the 40 raw LOB columns of X into the canonical interleaved layout
+    used by DeepLOB and level-tokenised Transformers:
+
+        [ask_p1, ask_v1, bid_p1, bid_v1, ask_p2, ask_v2, bid_p2, bid_v2, ...]
+
+    FI-2010 data is already in this layout and is returned unchanged.
+    Crypto data is reordered from its block layout.
+
+    Only the first 40 columns are reordered; any additional columns (e.g. derived
+    features in FI-2010's full-144 mode) are passed through unchanged.
+
+    Parameters
+    ----------
+    X      : np.ndarray, shape (N, F) where F >= 40
+    market : 'crypto' or 'fi2010'
+
+    Returns
+    -------
+    np.ndarray with the same shape as X but with columns 0:40 reordered.
+    """
+    if market != 'crypto':
+        # fi2010 is already in the canonical interleaved layout.
+        return X
+
+    # Crypto raw layout for the first 40 cols:
+    #   0..9  : bid_price_1..10
+    #   10..19: bid_vol_1..10
+    #   20..29: ask_price_1..10
+    #   30..39: ask_vol_1..10
+    # Target canonical layout (FI-2010 style):
+    #   4*i+0: ask_price_i+1  (col 20+i)
+    #   4*i+1: ask_vol_i+1    (col 30+i)
+    #   4*i+2: bid_price_i+1  (col 0+i)
+    #   4*i+3: bid_vol_i+1    (col 10+i)
+    perm = []
+    for i in range(10):
+        perm += [20 + i, 30 + i, 0 + i, 10 + i]
+
+    X_new = X.copy()
+    X_new[:, :40] = X[:, perm]
+    return X_new
+
+
+# ---------------------------------------------------------------------------
 # Hard-coded FI-2010 file names (fix 0.4 — no glob)
 # ---------------------------------------------------------------------------
 # Official FI-2010 release: Ntakaris et al. (2018)

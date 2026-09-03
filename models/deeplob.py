@@ -138,6 +138,10 @@ class DeepLOB(nn.Module):
         self.fc = nn.Linear(lstm_hidden, num_classes)
 
     def forward(self, x):
+        # Accept either (B, 1, T, 40) or (B, T, 40) from WindowedDataset.
+        # WindowedDataset yields (B, T, F); add the channel dim here.
+        if x.dim() == 3:
+            x = x.unsqueeze(1)   # (B, T, 40) → (B, 1, T, 40)
         # x: (B, 1, T, 40)
         x = self.conv1(x)   # (B, 32, T, 20)
         x = self.conv2(x)   # (B, 32, T, 10)

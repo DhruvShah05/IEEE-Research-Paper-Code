@@ -43,37 +43,80 @@ class MajorityClassBaseline:
 
 class PersistenceBaseline:
     """
-    Predicts the label that the *previous* sample had (last-observation carry-forward).
+    Predicts the direction of the last-H realized mid-price change.
 
-    For the first test sample the majority training class is used as the fallback.
-    This is the trivial momentum / persistence benchmark: if LOB state persists,
-    can we just predict yesterday's direction?
+    At time t, ``sign(mid[t] - mid[t-H])`` thresholded by ``threshold`` gives:
+      2 (Up)   if mid[t] > mid[t-H] + threshold*mid[t-H]
+      0 (Down) if mid[t] < mid[t-H] - threshold*mid[t-H]
+      1 (Stat) otherwise
+
+    All quantities are available at time t — no future information is used.
+    The previous ``y_prev``-based implementation leaked H observations of
+    future mid-price information and has been removed (fix A5).
     """
 
-    def __init__(self):
-        self.fallback_class_ = None
-
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> 'PersistenceBaseline':
-        counts = np.bincount(y, minlength=3)
-        self.fallback_class_ = int(np.argmax(counts))
-        return self
-
-    def predict(self, X: np.ndarray, y_prev: np.ndarray = None) -> np.ndarray:
+    def __init__(self, horizon: int = 40, threshold: float = 0.0001):
         """
         Parameters
         ----------
-        X       : feature matrix (not used)
-        y_prev  : previous labels, shape (N,). If None, uses a zero-shift of the
-                  test sequence (i.e., the predict call must be made with context).
+        horizon   : look-back H (same as the label horizon, usually 40).
+        threshold : fractional return threshold ± for Up/Down classification.
+        """
+        self.horizon    = horizon
+        self.threshold  = threshold
+        self.fallback_class_ = None
+        self._mid_prices = None  # training mid-prices, kept for warm-start
+
+    def fit(self, X: np.ndarray, y: np.ndarray,
+            mid_prices: np.ndarray = None, **kwargs) -> 'PersistenceBaseline':
+        """
+        Parameters
+        ----------
+        X          : feature matrix (not used)
+        y          : training labels (used only for fallback class)
+        mid_prices : 1-D array of raw mid-prices aligned with X.
+                     Required for realistic prediction; if None the fallback
+                     class is used for all samples.
+        """
+        counts = np.bincount(y, minlength=3)
+        self.fallback_class_ = int(np.argmax(counts))
+        if mid_prices is not None:
+            self._mid_prices = np.asarray(mid_prices, dtype=np.float64)
+        return self
+
+    def predict(self, X: np.ndarray,
+                mid_prices: np.ndarray = None) -> np.ndarray:
+        """
+        Parameters
+        ----------
+        X          : feature matrix (not used)
+        mid_prices : 1-D array of raw mid-prices for the test window.
+                     If provided, uses realized H-step change as the signal.
+                     If None, returns the fallback (majority training class).
         """
         n = len(X)
         preds = np.full(n, self.fallback_class_, dtype=np.int64)
-        if y_prev is not None and len(y_prev) == n:
-            preds = y_prev.astype(np.int64)
+
+        if mid_prices is not None:
+            mid = np.asarray(mid_prices, dtype=np.float64)
+            H = self.horizon
+            thr = self.threshold
+            for t in range(n):
+                if t < H:
+                    preds[t] = self.fallback_class_
+                else:
+                    ret = (mid[t] - mid[t - H]) / (mid[t - H] + 1e-12)
+                    if ret > thr:
+                        preds[t] = 2  # Up
+                    elif ret < -thr:
+                        preds[t] = 0  # Down
+                    else:
+                        preds[t] = 1  # Stationary
         return preds
 
-    def predict_proba(self, X: np.ndarray, y_prev: np.ndarray = None) -> np.ndarray:
-        preds = self.predict(X, y_prev)
+    def predict_proba(self, X: np.ndarray,
+                      mid_prices: np.ndarray = None) -> np.ndarray:
+        preds = self.predict(X, mid_prices)
         probs = np.zeros((len(X), 3), dtype=np.float32)
         for i, p in enumerate(preds):
             probs[i, p] = 1.0
@@ -124,12 +167,16 @@ class RandomBaseline:
         self._rng = np.random.default_rng(self.seed)
         return self
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        return self._rng.integers(0, 3, size=len(X)).astype(np.int64)
-
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         raw = self._rng.random((len(X), 3)).astype(np.float32)
         return raw / raw.sum(axis=1, keepdims=True)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        # B7: derive predict from argmax(predict_proba) so predict and predict_proba agree.
+        # NOTE: this advances the RNG state — call predict_proba separately if you need
+        # both, or store the result of predict_proba and argmax it yourself.
+        probs = self.predict_proba(X)
+        return probs.argmax(axis=1).astype(np.int64)
 
 
 # Mapping for use in run_all / train_tree pipeline

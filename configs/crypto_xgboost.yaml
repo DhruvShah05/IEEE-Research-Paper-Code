@@ -9,12 +9,15 @@ data:
   standardize: true
 
 model_params:
-  # null triggers Optuna search. Optuna search space (build.md §7.4):
-  #   n_estimators: categorical {50, 100, 200}
-  #   max_depth: int in [3, 10]
-  # sample_weight (class-balanced) passed at .fit() time for imbalance handling.
-  n_estimators: null
-  max_depth: null
+  # Frozen after `make tune` (A3 — do not leave null or train_tree_model raises).
+  # Replace with Optuna best params once tuning is complete.
+  n_estimators: 200
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  min_child_weight: 3
+  reg_lambda: 1.0
 
 imbalance:
   strategy: class_weight  # class_weight | focal_loss | none

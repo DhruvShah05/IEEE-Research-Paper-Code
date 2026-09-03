@@ -23,8 +23,8 @@ def build_model(config: dict) -> xgb.XGBClassifier:
     mp = config.get('model_params', {})
 
     return xgb.XGBClassifier(
-        n_estimators      = mp.get('n_estimators',      100),
-        max_depth         = mp.get('max_depth',         6),
+        n_estimators      = mp.get('n_estimators',      100) or 100,
+        max_depth         = mp.get('max_depth',         6)   or 6,
         learning_rate     = mp.get('learning_rate',     0.1),
         subsample         = mp.get('subsample',         0.8),
         colsample_bytree  = mp.get('colsample_bytree',  0.8),

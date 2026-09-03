@@ -12,6 +12,7 @@ import torch
 import sklearn
 import xgboost as xgb
 from torch.utils.data import DataLoader, TensorDataset
+from data.loaders import WindowedDataset, reorder_to_canonical
 
 from utils.seeding import set_seed
 from utils.logging import get_logger
@@ -75,6 +76,7 @@ def load_data(config: dict, logger: logging.Logger):
             X_val=X_val,     y_val=y_val,
             X_test=X_test,   y_test=y_test,
             ts_test=None, mid_test=None, ret_test=None,
+            ds=ds,
         )
 
     elif market == 'crypto':
@@ -121,6 +123,7 @@ def load_data(config: dict, logger: logging.Logger):
             X_val=X_val,     y_val=y_val,
             X_test=X_test,   y_test=y_test,
             ts_test=ds.ts_test, mid_test=ds.mid_test, ret_test=ds.ret_test,
+            ds=ds,
         )
 
     else:
@@ -160,6 +163,7 @@ def main():
     X_val,   y_val   = data['X_val'],   data['y_val']
     X_test,  y_test  = data['X_test'],  data['y_test']
     ts_test, mid_test, ret_test = data['ts_test'], data['mid_test'], data['ret_test']
+    ds = data.get('ds')  # dataset object (for save_split_manifest)
 
     # Fix 3.3: smoke-test operates on a COPY so original arrays are unchanged
     if args.smoke_test:
@@ -186,6 +190,43 @@ def main():
         config['model_params']['n_estimators'] = 2
         config['model_params']['max_depth'] = 3
 
+        # For windowed models (DeepLOB / temporal Transformer), ensure the
+        # smoke-test slice has at least T+1 rows so WindowedDataset is non-empty.
+        _T = config.get('model_params', {}).get('T', 100)
+        _min_rows = _T + 1
+        if X_train.shape[0] < _min_rows:
+            logger.warning(
+                f"SMOKE TEST: X_train has only {X_train.shape[0]} rows but windowed "
+                f"models need >= {_min_rows}. Padding to {_min_rows}."
+            )
+            # Repeat the last row to reach the minimum
+            _pad = _min_rows - X_train.shape[0]
+            X_train = np.vstack([X_train, np.tile(X_train[-1:], (_pad, 1))])
+            y_train = np.concatenate([y_train, np.full(_pad, y_train[-1])])
+
+    model_type = config.get('model')
+    is_neural = model_type in ['deeplob', 'transformer', 'structured_transformer']
+
+    # Determine model-specific config values needed before scaling.
+    mp_cfg = config.get('model_params', {})
+    _variant    = mp_cfg.get('variant', 'windowed') if model_type == 'deeplob' else None
+    _token_mode = mp_cfg.get('token_mode', 'scalar') if model_type == 'transformer' else None
+    is_windowed = (
+        (model_type == 'deeplob' and _variant != 'snapshot')
+        or (model_type == 'transformer' and _token_mode == 'temporal')
+    )
+    _T = mp_cfg.get('T', 100)  # sequence length for windowed models
+    market = config.get('market', '')
+
+    # A2: Determine if columns need reorder to canonical interleaved layout.
+    # DeepLOB's Conv2d stride-2 kernels assume FI-2010's interleaved layout.
+    # StructuredTransformer 'level'/'grouped' token modes also assume it.
+    _needs_reorder = (
+        (model_type == 'deeplob' and _variant != 'snapshot')
+        or (model_type in ('transformer', 'structured_transformer')
+            and mp_cfg.get('token_mode') in ('level', 'grouped'))
+    )
+
     # 3. Scaling — fit ONLY on training data (build.md §8 rule 7)
     if config.get('data', {}).get('standardize', True):
         logger.info("Fitting Z-score scaler on training data only...")
@@ -196,8 +237,17 @@ def main():
         # Save scaler stats for traceability (1.1)
         scaler.save_stats(run_dir)
 
-    model_type = config.get('model')
-    is_neural = model_type in ['deeplob', 'transformer', 'structured_transformer']
+    # A2: reorder columns to canonical interleaved layout after scaling.
+    if _needs_reorder:
+        logger.info(f"A2: Reordering columns to canonical layout for market='{market}'.")
+        X_train = reorder_to_canonical(X_train, market)
+        X_val   = reorder_to_canonical(X_val,   market)
+        X_test  = reorder_to_canonical(X_test,  market)
+
+    # B4: save split manifest to run_dir so split_manifest.json is written per run.
+    if ds is not None and hasattr(ds, 'save_split_manifest'):
+        ds.save_split_manifest(run_dir)
+
 
     # 4. Training
     if is_neural:
@@ -216,18 +266,37 @@ def main():
         g = torch.Generator()
         g.manual_seed(seed)
 
-        train_ds = TensorDataset(
-            torch.tensor(X_train, dtype=torch.float32),
-            torch.tensor(y_train, dtype=torch.long)
-        )
-        val_ds = TensorDataset(
-            torch.tensor(X_val, dtype=torch.float32),
-            torch.tensor(y_val, dtype=torch.long)
-        )
-        test_ds = TensorDataset(
-            torch.tensor(X_test, dtype=torch.float32),
-            torch.tensor(y_test, dtype=torch.long)
-        )
+        # A1: Use WindowedDataset for DeepLOB (windowed) and temporal Transformer.
+        # WindowedDataset yields (B, T, F); DeepLOB.forward handles the channel dim.
+        # For other models keep the flat TensorDataset.
+        if is_windowed:
+            from data.loaders import WindowedDataset
+            logger.info(f"A1: Using WindowedDataset(T={_T}) for windowed model.")
+            train_ds = WindowedDataset(X_train, y_train, T=_T).dataset
+            val_ds   = WindowedDataset(X_val,   y_val,   T=_T).dataset
+            test_ds_obj = WindowedDataset(X_test, y_test, T=_T)
+            test_ds  = test_ds_obj.dataset
+            # Align ts/mid/ret/y_test with the windowed test set (first T-1 dropped).
+            if ts_test is not None:
+                ts_test  = ts_test[_T - 1:]
+            if mid_test is not None:
+                mid_test = mid_test[_T - 1:]
+            if ret_test is not None:
+                ret_test = ret_test[_T - 1:]
+            y_test = y_test[_T - 1:]
+        else:
+            train_ds = TensorDataset(
+                torch.tensor(X_train, dtype=torch.float32),
+                torch.tensor(y_train, dtype=torch.long)
+            )
+            val_ds = TensorDataset(
+                torch.tensor(X_val, dtype=torch.float32),
+                torch.tensor(y_val, dtype=torch.long)
+            )
+            test_ds = TensorDataset(
+                torch.tensor(X_test, dtype=torch.float32),
+                torch.tensor(y_test, dtype=torch.long)
+            )
 
         # pin_memory speeds up Host→GPU transfer on CUDA machines.
         # num_workers: 4 workers is a good default for a single GPU; avoids
@@ -278,13 +347,14 @@ def main():
     else:
         from train.train_tree import train_tree_model
 
-        # Fix 0.5 warning: if n_estimators is None, tuning will run per seed
+        # A3: n_estimators must be frozen in the YAML (not null).
+        # train_tree_model will raise ValueError if it is None.
         mp = config.get('model_params', {})
         if mp.get('n_estimators') is None:
             logger.warning(
-                "model_params.n_estimators is None — Optuna will tune hyperparameters "
-                "for this seed, meaning variance across seeds includes HP variance "
-                "(fix 0.5 — freeze params after first tune run)."
+                "model_params.n_estimators is None — train_tree_model will raise. "
+                "Run `make tune` once and hard-code params into the YAML first. "
+                "See LOB_v3_review_and_run_plan.md §A3."
             )
 
         model = train_tree_model(config, X_train, y_train, X_val, y_val, run_dir)

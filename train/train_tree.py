@@ -84,7 +84,10 @@ def tune_tree_model(config: dict, X_train, y_train, X_val, y_val,
         temp_model = model_module.build_model(temp_config)
 
         fit_kwargs = {}
-        if config.get('imbalance', {}).get('strategy') == 'class_weight':
+        # Fix A3: For RF the constructor already has class_weight='balanced',
+        # so passing sample_weight here too would double-weight and not match
+        # the final training path. Only pass sample_weight for XGBoost.
+        if config.get('imbalance', {}).get('strategy') == 'class_weight' and model_name == 'xgboost':
             sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
             fit_kwargs['sample_weight'] = sample_weights
 
@@ -139,15 +142,16 @@ def train_tree_model(config: dict, X_train, y_train, X_val, y_val, run_dir: str)
 
     model_params = config.get('model_params', {})
 
-    # If params are not frozen, run tuning (warn per fix 0.5)
+    # A3: params must be frozen in the YAML before seeded training.
+    # Do NOT silently run tuning here — HP variance would pollute seed variance.
+    # Run `make tune` once to get params, then hard-code them into the YAML.
     if model_params.get('n_estimators') is None:
-        logger.warning(
-            "model_params.n_estimators is None — running Optuna tuning now. "
-            "Fix 0.5: run tune_tree_model() once and freeze params into YAML."
+        raise ValueError(
+            f"model_params.n_estimators is None for model '{model_name}'. "
+            "Run `make tune` once to get best params, then hard-code them into "
+            "the config YAML (e.g. configs/crypto_xgboost.yaml) before running "
+            "seeded experiments. See LOB_v3_review_and_run_plan.md §A3."
         )
-        best_params = tune_tree_model(config, X_train, y_train, X_val, y_val)
-        config['model_params'] = best_params
-        model_params = best_params
 
     logger.info(f"Training final {model_name} with params: {model_params}")
     model = model_module.build_model(config)

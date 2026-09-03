@@ -106,11 +106,12 @@ def apply_horizon_labeling(
     )
 
     if scheme == 'smoothed_mean':
-        # Mean of next H mid-prices vs current mid (FI-2010 convention)
-        future_mean = pd.Series(
-            [mid_price.iloc[i + 1: i + horizon + 1].mean() for i in range(len(mid_price))],
-            index=mid_price.index
-        )
+        # Mean of next H mid-prices vs current mid (FI-2010 convention).
+        # B5: vectorized — O(N) instead of O(N·H) list comprehension.
+        # rolling(H).mean().shift(-H) at row t gives mean(mid[t+1], ..., mid[t+H]):
+        #   rolling(H).mean() at row t+H = mean(mid[t+1..t+H]), then shift(-H) brings
+        #   that value to row t.  The last H rows will be NaN and are dropped below.
+        future_mean = mid_price.rolling(window=horizon, min_periods=horizon).mean().shift(-horizon)
         returns = (future_mean - mid_price) / mid_price
     else:
         # Point-to-point: mid[t+H] vs mid[t]
